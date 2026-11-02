@@ -1,0 +1,10 @@
+[package]
+name = "meshtadpole-radio"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "CH341 USB-SPI bridge and SX1262 driver for the MeshTadpole USB stick"
+rust-version = "1.85"
+
+[dependencies]
+thiserror = "2"
