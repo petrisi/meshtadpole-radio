@@ -7,9 +7,46 @@ Rust library: host-side driver for the MeshTadpole SX1262 USB stick. Shared by `
 | Item | Value |
 |---|---|
 | Transceiver | Semtech SX1262 (Elecrow LR1262 module), 850–930 MHz, +22 dBm max |
-| Host interface | WCH CH341 USB-SPI/GPIO bridge, USB `1a86:5512` (to be verified on device) |
-| EEPROM | Onboard; auto-configuration data used by meshtasticd ≥ 2.6.5 |
+| Host interface | WCH CH341F USB-SPI/GPIO bridge, USB `1a86:5512`, full speed |
+| USB product string | Raw ASCII `MESHTOAD\0` + 16-byte device id (CH341F EEPROM, non-standard descriptor). meshtasticd maps `MESHTOAD` → `lora-usb-meshtoad-e22.yaml` |
+| USB serial | 8 ASCII digits, e.g. `20002049` |
+| TCXO | 1.8 V via SX1262 DIO3 |
+| RF switch | SX1262 DIO2 + RXEN on CH341 D1 |
 | Firmware | None. All protocol logic runs on the host. |
+
+## CH341 pin map
+
+| Pin | Dir | Function |
+|---|---|---|
+| D0 | out | SX1262 NSS |
+| D1 | out | RXEN (high in RX) |
+| D2 | out | SX1262 NRESET |
+| D3 | out | SCK |
+| D4 | in | SX1262 BUSY |
+| D5 | out | MOSI |
+| D6 | in | SX1262 DIO1 (IRQ) |
+| D7 | in | MISO |
+
+## CH341 wire protocol
+
+Interface 0, bulk OUT `0x02`, bulk IN `0x82`.
+
+| Op | OUT | IN |
+|---|---|---|
+| SPI | `A8` + ≤31 bytes, each bit-reversed | same count, bit-reversed |
+| GPIO write | `AB, 80\|state[5:0], 40\|dir[5:0], 20` | — |
+| Input read | `A0` | byte 0 = D7..D0 |
+
+## Examples
+
+```
+cargo run --example probe                                  # enumerate, reset, identify
+cargo run --example rx -- 869431250 62500 8 8 2b 16 [s]    # raw RX, NDJSON (Meshtastic EFL)
+cargo run --example rx -- 869618000 62500 8 8 12 16 [s]    # raw RX (MeshCore EU/UK Narrow)
+cargo run --example diag -- <same args> <s>                # IRQ/RSSI/mode trace, SPI-polled
+```
+
+Sync word byte `sw` maps to register `0x0740` as `[(sw&0xF0)|4, ((sw&0x0F)<<4)|4]`.
 
 Schematic: https://github.com/LongMesh/MeshHardware (MeshTadpoleStick).
 
@@ -25,7 +62,10 @@ Schematic: https://github.com/LongMesh/MeshHardware (MeshTadpoleStick).
 
 ## Status
 
-Skeleton.
+- CH341 enumeration, descriptor decode, SPI, GPIO: working (Windows/WinUSB).
+- SX1262 configure, continuous RX, IRQ via DIO1, packet status, frequency error: working.
+- TX: implemented, untested.
+- Linux: untested.
 
 ## License
 
