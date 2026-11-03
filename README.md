@@ -65,7 +65,7 @@ Schematic: https://github.com/LongMesh/MeshHardware (MeshTadpoleStick).
 
 - CH341 enumeration, descriptor decode, SPI, GPIO: working (Windows/WinUSB).
 - SX1262 configure, continuous RX, IRQ via DIO1, packet status, frequency error: working.
-- TX: implemented, untested.
+- TX with CSMA (caller) and TX_DONE wait: working.
 - Linux (Ubuntu 26.04.1, kernel 7.0, VMware USB passthrough): probe, RX, TX verified.
 
 ## License
