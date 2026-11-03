@@ -47,6 +47,42 @@ pub struct LinkConfig {
     /// few tens of ms deaf; without it a lockup the stuck detector misses (e.g. under steady traffic) can
     /// last until the next detection. None = only reactive recovery.
     pub agc_reset_interval: Option<Duration>,
+    /// Updated on every loop iteration; watch it with `spawn_watchdog`.
+    pub liveness: Arc<Liveness>,
+}
+
+/// Time of the last radio loop iteration (connected or not), for detecting a blocked loop.
+#[derive(Debug, Default)]
+pub struct Liveness(std::sync::atomic::AtomicU64);
+
+impl Liveness {
+    pub fn tick(&self) {
+        self.0.store((now() * 1000.0) as u64, Ordering::Relaxed);
+    }
+    /// Seconds since the last iteration (None before the first).
+    pub fn age_s(&self) -> Option<f64> {
+        match self.0.load(Ordering::Relaxed) {
+            0 => None,
+            ms => Some(now() - ms as f64 / 1000.0),
+        }
+    }
+}
+
+/// Call `on_stall(age_s)` once if the loop has not iterated for `max`. Checks every 5 s. A blocked loop
+/// (e.g. a USB call that never returns) cannot be recovered in-process; daemons log and exit so a
+/// service manager restarts them.
+pub fn spawn_watchdog(l: Arc<Liveness>, max: Duration, on_stall: impl FnOnce(f64) + Send + 'static) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(5));
+            if let Some(a) = l.age_s() {
+                if a > max.as_secs_f64() {
+                    on_stall(a);
+                    return;
+                }
+            }
+        }
+    });
 }
 
 /// Transmit request. `meta` is opaque to the link and handed back in [`Handler::transmitted`].
@@ -361,6 +397,7 @@ pub fn run<H: Handler>(cfg: &LinkConfig, h: &mut H, jobs: &Receiver<TxJob<H::Met
                     }
                 }
             }
+            cfg.liveness.tick();
             std::thread::sleep(Duration::from_millis(200));
             continue;
         };
@@ -403,6 +440,7 @@ fn connected<H: Handler>(
     let mut next_periodic = cfg.agc_reset_interval.map(|i| Instant::now() + i);
     let r: Result<(), Exit> = (|| {
         while !stop.load(Ordering::SeqCst) {
+            cfg.liveness.tick();
             while let Ok(job) = jobs.try_recv() {
                 let at = Instant::now() + job.delay;
                 pending.push_back((job, at));

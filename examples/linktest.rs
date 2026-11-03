@@ -52,6 +52,7 @@ fn main() {
         duty_cycle_enforce: true,
         stats_interval: Duration::from_secs(a[2].parse().unwrap()),
         agc_reset_interval: a.get(4).map(|x| Duration::from_secs(x.parse().unwrap())),
+        liveness: Default::default(),
     };
     let (_tx, rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
