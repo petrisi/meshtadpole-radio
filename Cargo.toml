@@ -3,9 +3,17 @@ name = "meshtadpole-radio"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "CH341 USB-SPI bridge and SX1262 driver for the MeshTadpole USB stick"
+description = "CH341 USB-SPI bridge and SX1262 driver for the MeshTadpole USB stick, with shared daemon infrastructure"
 rust-version = "1.85"
+
+[features]
+default = []
+# SQLite helpers and common tables (sessions, radio_stats, radio_events, requests).
+store = ["dep:rusqlite", "dep:serde_json", "dep:hex"]
 
 [dependencies]
 thiserror = "2"
 rusb = { version = "0.9", features = ["vendored"] }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+serde_json = { version = "1", optional = true }
+hex = { version = "0.4", optional = true }

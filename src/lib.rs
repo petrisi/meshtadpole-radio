@@ -1,6 +1,11 @@
-//! CH341 USB-SPI/GPIO bridge and SX1262 LoRa transceiver driver for the MeshTadpole USB stick.
+//! CH341 USB-SPI/GPIO bridge and SX1262 LoRa transceiver driver for the MeshTadpole USB stick,
+//! plus protocol-independent daemon infrastructure (radio session loop, local API transport, SQLite helpers).
 
+pub mod api;
 pub mod ch341;
+pub mod link;
+#[cfg(feature = "store")]
+pub mod store;
 pub mod sx1262;
 
 #[derive(Debug, thiserror::Error)]

@@ -54,6 +54,9 @@ Schematic: https://github.com/LongMesh/MeshHardware (MeshTadpoleStick).
 
 - CH341: device enumeration, SPI transfers, GPIO (NSS, RESET, BUSY, DIO1, RF switch).
 - SX1262: init, LoRa modem parameters, TX, continuous RX, IRQ handling, RSSI/SNR/frequency error, CAD.
+- `link`: protocol-independent radio session loop used by the tool daemons. Open with reconnect (backoff 1-30 s, starts without a stick), continuous RX, TX queue with CSMA (busy = preamble/header detected; random 200-800 ms deferral), rolling-hour duty-cycle limit, idle noise sampling ~1/s, periodic stats, RX watchdog. Protocol logic is a `link::Handler`.
+- `api`: daemon API transport (TCP, NDJSON lines, subscriber broadcast).
+- `store` (feature `store`): SQLite helpers and common tables `meta`, `sessions`, `radio_stats`, `radio_events`, `requests`; `query_json`.
 
 ## Platform setup
 
