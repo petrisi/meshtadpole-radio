@@ -116,7 +116,7 @@ impl Airtime {
         while log.front().is_some_and(|(t, _)| t.elapsed() > Duration::from_secs(3600)) {
             log.pop_front();
         }
-        log.iter().map(|(_, a)| a).sum()
+        log.iter().map(|(_, a)| a).sum::<f64>() + 0.0 // empty sum is -0.0
     }
     fn push(&self, ms: f64) {
         self.0.lock().unwrap().push_back((Instant::now(), ms));
@@ -163,6 +163,69 @@ fn channel_busy(radio: &mut Sx1262, since: &mut Option<Instant>) -> crate::Resul
         return Ok(false);
     }
     Ok(true)
+}
+
+/// Detects a receiver stuck at a constant high RSSI with no reception (observed on the MeshTadpole
+/// SX1262: idle RSSI locks at about -76 dBm and nothing is received until the chip is reconfigured;
+/// MeshCore firmware has a periodic AGC reset for the same symptom).
+struct Stuck {
+    floor: Option<f32>,
+    floor_t: Instant,
+    win: VecDeque<f32>,
+    backoff: Duration,
+    next_check: Instant,
+    last_reset: Option<Instant>,
+}
+
+impl Stuck {
+    /// Idle samples (~1/s) in the window.
+    const WIN: usize = 15;
+    /// Window spread (dB) at most, and minimum elevation above the floor (dB).
+    const SPREAD: f32 = 3.0;
+    const ELEVATION: f32 = 12.0;
+
+    fn new() -> Stuck {
+        Stuck { floor: None, floor_t: Instant::now(), win: VecDeque::new(), backoff: Duration::ZERO, next_check: Instant::now(), last_reset: None }
+    }
+
+    /// Any reception: the receiver works.
+    fn activity(&mut self) {
+        self.win.clear();
+    }
+
+    /// Returns (stuck rssi, floor) when the window shows a stuck receiver.
+    fn sample(&mut self, r: f32) -> Option<(f32, f32)> {
+        // Floor: lowest idle sample; re-estimated from the window every 10 min so it can rise.
+        if self.floor_t.elapsed() > Duration::from_secs(600) && self.win.len() == Self::WIN {
+            self.floor = self.win.iter().copied().reduce(f32::min);
+            self.floor_t = Instant::now();
+        }
+        if self.floor.is_none_or(|f| r < f) {
+            self.floor = Some(r);
+        }
+        self.win.push_back(r);
+        if self.win.len() > Self::WIN {
+            self.win.pop_front();
+        }
+        if self.win.len() < Self::WIN || Instant::now() < self.next_check {
+            return None;
+        }
+        let mn = self.win.iter().copied().reduce(f32::min)?;
+        let mx = self.win.iter().copied().reduce(f32::max)?;
+        let floor = self.floor?;
+        (mx - mn <= Self::SPREAD && mn > floor + Self::ELEVATION).then_some((mn, floor))
+    }
+
+    /// After a reset: repeated triggers within 2 min back off (constant real interferer), up to 10 min.
+    fn reset_done(&mut self) {
+        self.backoff = match self.last_reset {
+            Some(t) if t.elapsed() < Duration::from_secs(120) => (self.backoff * 2).clamp(Duration::from_secs(30), Duration::from_secs(600)),
+            _ => Duration::ZERO,
+        };
+        self.last_reset = Some(Instant::now());
+        self.next_check = Instant::now() + self.backoff;
+        self.win.clear();
+    }
 }
 
 struct Acc {
@@ -299,6 +362,7 @@ fn connected<H: Handler>(
     let lora = &cfg.lora;
     let mut busy_since: Option<Instant> = None;
     let mut last_noise = Instant::now();
+    let mut stuck = Stuck::new();
     let r: Result<(), Exit> = (|| {
         while !stop.load(Ordering::SeqCst) {
             while let Ok(job) = jobs.try_recv() {
@@ -309,6 +373,7 @@ fn connected<H: Handler>(
             match radio.poll(lora)? {
                 Some(RxEvent::Frame(f)) => {
                     did_rx = true;
+                    stuck.activity();
                     let t = now();
                     let air = lora.time_on_air_us(f.data.len()) / 1000.0;
                     acc.frames += 1;
@@ -321,6 +386,7 @@ fn connected<H: Handler>(
                 }
                 Some(RxEvent::HeaderError { rssi_inst_dbm, .. }) => {
                     did_rx = true;
+                    stuck.activity();
                     acc.hdr += 1;
                     h.header_error(now(), rssi_inst_dbm).map_err(Exit::Handler)?;
                 }
@@ -342,6 +408,13 @@ fn connected<H: Handler>(
                     acc.nmax = acc.nmax.max(r);
                     acc.nsum += r;
                     last_noise = Instant::now();
+                    if let Some((at, floor)) = stuck.sample(r) {
+                        radio.configure(lora)?;
+                        radio.start_rx()?;
+                        stuck.reset_done();
+                        let detail = format!("rssi constant at {at:.0} dBm (floor {floor:.0} dBm), no reception; receiver reconfigured");
+                        h.event(&Event::RxRestored { detail }).map_err(Exit::Handler)?;
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(3));
             }

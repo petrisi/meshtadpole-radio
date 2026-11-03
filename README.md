@@ -42,8 +42,9 @@ Interface 0, bulk OUT `0x02`, bulk IN `0x82`.
 ```
 cargo run --example probe                                  # enumerate, reset, identify
 cargo run --example rx -- 869431250 62500 8 8 2b 16 [s]    # raw RX, NDJSON (Meshtastic EFL)
-cargo run --example rx -- 869618000 62500 8 8 12 16 [s]    # raw RX (MeshCore EU/UK Narrow)
+cargo run --example rx -- 869618000 62500 8 8 12 32 [s]    # raw RX (MeshCore EU/UK Narrow)
 cargo run --example diag -- <same args> <s>                # IRQ/RSSI/mode trace, SPI-polled
+cargo run --example linktest -- 869618000 10 120           # link loop, printing handler: <freq> <stats_s> [run_s]
 ```
 
 Sync word byte `sw` maps to register `0x0740` as `[(sw&0xF0)|4, ((sw&0x0F)<<4)|4]`.
@@ -54,7 +55,7 @@ Schematic: https://github.com/LongMesh/MeshHardware (MeshTadpoleStick).
 
 - CH341: device enumeration, SPI transfers, GPIO (NSS, RESET, BUSY, DIO1, RF switch).
 - SX1262: init, LoRa modem parameters, TX, continuous RX, IRQ handling, RSSI/SNR/frequency error, CAD.
-- `link`: protocol-independent radio session loop used by the tool daemons. Open with reconnect (backoff 1-30 s, starts without a stick), continuous RX, TX queue with CSMA (busy = preamble/header detected; random 200-800 ms deferral), rolling-hour duty-cycle limit, idle noise sampling ~1/s, periodic stats, RX watchdog. Protocol logic is a `link::Handler`.
+- `link`: protocol-independent radio session loop used by the tool daemons. Open with reconnect (backoff 1-30 s, starts without a stick), continuous RX, TX queue with CSMA (busy = preamble/header detected; random 200-800 ms deferral), rolling-hour duty-cycle limit, idle noise sampling ~1/s, periodic stats, RX watchdog (chip not in RX mode), stuck-receiver recovery (idle RSSI constant within 3 dB for 15 samples, >= 12 dB above the floor, no reception: reconfigure; repeated triggers back off 30 s-10 min). Recoveries are `rx_restored` events. Protocol logic is a `link::Handler`.
 - `api`: daemon API transport (TCP, NDJSON lines, subscriber broadcast).
 - `store` (feature `store`): SQLite helpers and common tables `meta`, `sessions`, `radio_stats`, `radio_events`, `requests`; `query_json`.
 
