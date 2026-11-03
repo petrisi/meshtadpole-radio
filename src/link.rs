@@ -90,7 +90,7 @@ pub enum Event {
     /// Logged only when the error text changes.
     OpenFailed { error: String },
     /// Receiver recovery. `detail` starts with the trigger: `agc_stuck:` (stuck heuristic, light reset),
-    /// `agc_periodic:` (interval reset), `agc_startup:` (after open), `mode_watchdog:` (chip not in RX,
+    /// `agc_periodic:` (interval reset), `mode_watchdog:` (chip not in RX,
     /// full reconfigure). `fallback=configure` in detail: light reset failed, full reconfigure done.
     RxRestored { detail: String },
 }
@@ -198,7 +198,7 @@ impl Stuck {
         Stuck { floor: None, floor_t: Instant::now(), win: VecDeque::new(), backoff: Duration::ZERO, next_check: Instant::now(), last_reset: None }
     }
 
-    /// Any reception: the receiver works.
+    /// CRC-good reception: the receiver works.
     fn activity(&mut self) {
         self.win.clear();
     }
@@ -395,10 +395,7 @@ fn connected<H: Handler>(
     let mut stuck = Stuck::new();
     let mut last_frame: Option<Instant> = None;
     let mut next_periodic = cfg.agc_reset_interval.map(|i| Instant::now() + i);
-    // Start from a freshly calibrated front end so the floor estimate is not learned from a stuck receiver.
     let r: Result<(), Exit> = (|| {
-        let how = recover(radio, lora)?;
-        h.event(&Event::RxRestored { detail: format!("agc_startup: {how}") }).map_err(Exit::Handler)?;
         while !stop.load(Ordering::SeqCst) {
             while let Ok(job) = jobs.try_recv() {
                 let at = Instant::now() + job.delay;
@@ -408,8 +405,10 @@ fn connected<H: Handler>(
             match radio.poll(lora)? {
                 Some(RxEvent::Frame(f)) => {
                     did_rx = true;
-                    stuck.activity();
+                    // Only a CRC-good frame proves the receiver works; header/CRC errors can come from
+                    // strong energy while the front end is partly deaf.
                     if !f.crc_error {
+                        stuck.activity();
                         last_frame = Some(Instant::now());
                     }
                     let t = now();
@@ -424,7 +423,6 @@ fn connected<H: Handler>(
                 }
                 Some(RxEvent::HeaderError { rssi_inst_dbm, .. }) => {
                     did_rx = true;
-                    stuck.activity();
                     acc.hdr += 1;
                     h.header_error(now(), rssi_inst_dbm).map_err(Exit::Handler)?;
                 }

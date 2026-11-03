@@ -399,7 +399,7 @@ impl Sx1262 {
         self.clear_irq(irq::ALL)?;
         let errs = self.get_device_errors()?;
         if errs != 0 {
-            return Err(Error::Radio(format!("device errors 0x{errs:04x} after configure")));
+            return Err(Error::Radio(format!("device errors 0x{errs:04x} after apply_settings")));
         }
         Ok(())
     }
