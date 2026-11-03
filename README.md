@@ -4,7 +4,7 @@ Rust library: host-side driver for the MeshTadpole SX1262 USB stick. Shared by `
 
 ## Hardware
 
-<img width="1392" height="1044" alt="image" src="https://github.com/user-attachments/assets/7b53b4e0-05f3-4156-8459-4f8ad814ac89" />
+<img width="1700" height="492" alt="image" src="https://github.com/user-attachments/assets/5569561f-7569-4061-95a8-a9be983c979b" />
 
 | Item | Value |
 |---|---|
