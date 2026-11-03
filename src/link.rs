@@ -193,6 +193,8 @@ impl Stuck {
     /// A floor never below this is itself suspect (receiver stuck since the session started): a flat
     /// window above it also triggers. Typical MeshTadpole idle floor at 62.5 kHz: -95..-100 dBm.
     const SUSPECT: f32 = -88.0;
+    /// Readings at or below this are invalid (chip just entered RX).
+    const INVALID: f32 = -125.0;
 
     fn new() -> Stuck {
         Stuck { floor: None, floor_t: Instant::now(), win: VecDeque::new(), backoff: Duration::ZERO, next_check: Instant::now(), last_reset: None }
@@ -205,6 +207,10 @@ impl Stuck {
 
     /// Returns (stuck rssi, floor) when the window shows a stuck receiver.
     fn sample(&mut self, r: f32) -> Option<(f32, f32)> {
+        // GetRssiInst reads -127.5 dBm (no valid measurement) right after entering RX; never a floor.
+        if r <= Self::INVALID {
+            return None;
+        }
         // Floor: lowest idle sample; re-estimated from the window every 10 min so it can rise.
         if self.floor_t.elapsed() > Duration::from_secs(600) && self.win.len() == Self::WIN {
             self.floor = self.win.iter().copied().reduce(f32::min);
@@ -439,11 +445,13 @@ fn connected<H: Handler>(
                     }
                 } else if pending.is_empty() && last_noise.elapsed() >= Duration::from_secs(1) {
                     let r = radio.rssi_inst()?;
-                    acc.n += 1;
-                    acc.nmin = acc.nmin.min(r);
-                    acc.nmax = acc.nmax.max(r);
-                    acc.nsum += r;
                     last_noise = Instant::now();
+                    if r > Stuck::INVALID {
+                        acc.n += 1;
+                        acc.nmin = acc.nmin.min(r);
+                        acc.nmax = acc.nmax.max(r);
+                        acc.nsum += r;
+                    }
                     if let Some((at, floor)) = stuck.sample(r) {
                         let how = recover(radio, lora)?;
                         stuck.reset_done();
