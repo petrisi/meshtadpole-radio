@@ -58,14 +58,15 @@ Schematic: https://github.com/LongMesh/MeshHardware (MeshTadpoleStick).
 ## Platform setup
 
 - Windows: bind WinUSB to `1a86:5512` (Zadig). Vendor CH341PAR driver is not used.
-- Linux: libusb access via udev rule; `ch341`/`spi-ch341-usb` kernel modules must not claim the device.
+- Linux: in-tree kernel driver `spi_ch341` (kernel ≥ 6.x, verified 7.0 / Ubuntu 26.04) binds `1a86:5512` on plug-in. The library sets libusb auto-detach: the driver is detached on open and re-attached on release; no blacklist needed. Running as root works as is. Non-root: udev rule granting access, e.g. `/etc/udev/rules.d/99-meshtadpole.rules`:
+  `SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="5512", MODE="0660", GROUP="plugdev"` (then `udevadm control --reload && udevadm trigger`). Optionally blacklist `spi_ch341` (`/etc/modprobe.d/meshtadpole.conf`: `blacklist spi_ch341`) if other software must not see the device as SPI master.
 
 ## Status
 
 - CH341 enumeration, descriptor decode, SPI, GPIO: working (Windows/WinUSB).
 - SX1262 configure, continuous RX, IRQ via DIO1, packet status, frequency error: working.
 - TX: implemented, untested.
-- Linux: untested.
+- Linux (Ubuntu 26.04.1, kernel 7.0, VMware USB passthrough): probe, RX, TX verified.
 
 ## License
 
