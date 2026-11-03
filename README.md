@@ -4,6 +4,8 @@ Rust library: host-side driver for the MeshTadpole SX1262 USB stick. Shared by `
 
 ## Hardware
 
+<img width="1392" height="1044" alt="image" src="https://github.com/user-attachments/assets/7b53b4e0-05f3-4156-8459-4f8ad814ac89" />
+
 | Item | Value |
 |---|---|
 | Transceiver | Semtech SX1262 (Elecrow LR1262 module), 850–930 MHz, +22 dBm max |
