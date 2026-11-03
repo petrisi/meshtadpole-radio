@@ -121,14 +121,22 @@ pub struct Stats {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Connected { usb_serial: String },
-    Disconnected { error: String },
+    Connected {
+        usb_serial: String,
+    },
+    Disconnected {
+        error: String,
+    },
     /// Logged only when the error text changes.
-    OpenFailed { error: String },
+    OpenFailed {
+        error: String,
+    },
     /// Receiver recovery. `detail` starts with the trigger: `agc_stuck:` (stuck heuristic, light reset),
     /// `agc_periodic:` (interval reset), `mode_watchdog:` (chip not in RX,
     /// full reconfigure). `fallback=configure` in detail: light reset failed, full reconfigure done.
-    RxRestored { detail: String },
+    RxRestored {
+        detail: String,
+    },
 }
 
 impl Event {
@@ -233,7 +241,14 @@ impl Stuck {
     const INVALID: f32 = -125.0;
 
     fn new() -> Stuck {
-        Stuck { floor: None, floor_t: Instant::now(), win: VecDeque::new(), backoff: Duration::ZERO, next_check: Instant::now(), last_reset: None }
+        Stuck {
+            floor: None,
+            floor_t: Instant::now(),
+            win: VecDeque::new(),
+            backoff: Duration::ZERO,
+            next_check: Instant::now(),
+            last_reset: None,
+        }
     }
 
     /// CRC-good reception: the receiver works.
@@ -272,7 +287,9 @@ impl Stuck {
     /// After a reset: repeated triggers within 2 min back off (constant real interferer), up to 10 min.
     fn reset_done(&mut self) {
         self.backoff = match self.last_reset {
-            Some(t) if t.elapsed() < Duration::from_secs(120) => (self.backoff * 2).clamp(Duration::from_secs(30), Duration::from_secs(600)),
+            Some(t) if t.elapsed() < Duration::from_secs(120) => {
+                (self.backoff * 2).clamp(Duration::from_secs(30), Duration::from_secs(600))
+            }
             _ => Duration::ZERO,
         };
         self.last_reset = Some(Instant::now());
@@ -351,7 +368,13 @@ impl From<crate::Error> for Exit {
 
 /// Run until `stop` is set or the handler fails. Radio errors cause reconnect (backoff 1..30 s);
 /// the loop starts even without a stick.
-pub fn run<H: Handler>(cfg: &LinkConfig, h: &mut H, jobs: &Receiver<TxJob<H::Meta>>, airtime: &Arc<Airtime>, stop: &AtomicBool) -> Result<(), BoxError> {
+pub fn run<H: Handler>(
+    cfg: &LinkConfig,
+    h: &mut H,
+    jobs: &Receiver<TxJob<H::Meta>>,
+    airtime: &Arc<Airtime>,
+    stop: &AtomicBool,
+) -> Result<(), BoxError> {
     let lora = cfg.lora;
     let mut radio_opt: Option<Sx1262> = None;
     let mut backoff = Duration::from_secs(1);
@@ -517,7 +540,8 @@ fn connected<H: Handler>(
                 if mode != 5 && pending.is_empty() {
                     radio.configure(lora)?;
                     radio.start_rx()?;
-                    h.event(&Event::RxRestored { detail: format!("mode_watchdog: chip mode was {mode}; configure") }).map_err(Exit::Handler)?;
+                    h.event(&Event::RxRestored { detail: format!("mode_watchdog: chip mode was {mode}; configure") })
+                        .map_err(Exit::Handler)?;
                 }
                 *last_stat = Instant::now();
             }

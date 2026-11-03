@@ -33,7 +33,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let hex: String = f.data.iter().map(|b| format!("{b:02x}")).collect();
                         println!(
                             "{{\"ts\":{ts:.3},\"len\":{},\"crc_error\":{},\"rssi\":{},\"snr\":{},\"signal_rssi\":{},\"freq_error_hz\":{:.0},\"hex\":\"{hex}\"}}",
-                            f.data.len(), f.crc_error, f.rssi_dbm, f.snr_db, f.signal_rssi_dbm, f.freq_error_hz
+                            f.data.len(),
+                            f.crc_error,
+                            f.rssi_dbm,
+                            f.snr_db,
+                            f.signal_rssi_dbm,
+                            f.freq_error_hz
                         );
                     }
                     sx1262::RxEvent::HeaderError { irq, rssi_inst_dbm } => {

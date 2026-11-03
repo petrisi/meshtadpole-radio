@@ -63,10 +63,7 @@ fn read_string_raw<T: UsbContext>(h: &DeviceHandle<T>, index: u8) -> Vec<u8> {
 /// NUL-terminated, followed by binary data (16-byte device id).
 fn decode_string(raw: &[u8]) -> String {
     if raw.len() >= 2 && raw[1] == 0x03 && raw[0] as usize <= raw.len() {
-        let u: Vec<u16> = raw[2..raw[0] as usize]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
+        let u: Vec<u16> = raw[2..raw[0] as usize].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         return String::from_utf16_lossy(&u).split('\0').next().unwrap_or("").to_string();
     }
     let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
@@ -148,10 +145,8 @@ impl Ch341 {
             Some(i) => i.clone(),
             None => {
                 // Present but not openable: report why instead of "not found".
-                let errs: Vec<String> = infos
-                    .iter()
-                    .filter_map(|i| i.open_error.as_ref().map(|e| format!("bus {} addr {}: {e}", i.bus, i.address)))
-                    .collect();
+                let errs: Vec<String> =
+                    infos.iter().filter_map(|i| i.open_error.as_ref().map(|e| format!("bus {} addr {}: {e}", i.bus, i.address))).collect();
                 return Err(if errs.is_empty() {
                     Error::NotFound
                 } else {
@@ -159,10 +154,7 @@ impl Ch341 {
                 });
             }
         };
-        let dev = ctx.devices()?
-            .iter()
-            .find(|d| d.bus_number() == info.bus && d.address() == info.address)
-            .ok_or(Error::NotFound)?;
+        let dev = ctx.devices()?.iter().find(|d| d.bus_number() == info.bus && d.address() == info.address).ok_or(Error::NotFound)?;
         let h = dev.open()?;
         #[cfg(target_os = "linux")]
         {
@@ -205,12 +197,7 @@ impl Ch341 {
     }
 
     fn uio_out(&self) -> Result<()> {
-        self.write(&[
-            CMD_UIO_STREAM,
-            UIO_STM_OUT | (self.state & 0x3F),
-            UIO_STM_DIR | (self.dir & 0x3F),
-            UIO_STM_END,
-        ])
+        self.write(&[CMD_UIO_STREAM, UIO_STM_OUT | (self.state & 0x3F), UIO_STM_DIR | (self.dir & 0x3F), UIO_STM_END])
     }
 
     /// Drive output pin D0..D5.

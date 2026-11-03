@@ -263,9 +263,7 @@ impl LoraConfig {
         let sf = self.sf as f64;
         let de = if self.ldro() { 1.0 } else { 0.0 };
         let cr = (self.cr - 4) as f64;
-        let n_payload = 8.0
-            + ((8.0 * len as f64 - 4.0 * sf + 28.0 + 16.0) / (4.0 * (sf - 2.0 * de))).ceil().max(0.0)
-                * (cr + 4.0);
+        let n_payload = 8.0 + ((8.0 * len as f64 - 4.0 * sf + 28.0 + 16.0) / (4.0 * (sf - 2.0 * de))).ceil().max(0.0) * (cr + 4.0);
         let n_pre = self.preamble_len as f64 + 4.25;
         (n_pre + n_payload) * self.symbol_us()
     }
@@ -352,10 +350,7 @@ impl Sx1262 {
             };
             // 5 ms start-up delay in 15.625 us steps.
             let d: u32 = 320;
-            self.command(
-                cmd::SET_DIO3_AS_TCXO_CTRL,
-                &[code, (d >> 16) as u8, (d >> 8) as u8, d as u8],
-            )?;
+            self.command(cmd::SET_DIO3_AS_TCXO_CTRL, &[code, (d >> 16) as u8, (d >> 8) as u8, d as u8])?;
         }
         Ok(())
     }
@@ -381,10 +376,7 @@ impl Sx1262 {
         let ocp = ((c.current_limit_ma as f32) / 2.5).round().min(255.0) as u8;
         self.write_registers(reg::OCP, &[ocp])?;
         self.command(cmd::SET_BUFFER_BASE_ADDRESS, &[0x00, 0x00])?;
-        self.command(
-            cmd::SET_MODULATION_PARAMS,
-            &[c.sf, c.bw_code()?, c.cr - 4, c.ldro() as u8],
-        )?;
+        self.command(cmd::SET_MODULATION_PARAMS, &[c.sf, c.bw_code()?, c.cr - 4, c.ldro() as u8])?;
         self.set_packet_params(c.preamble_len, 0xFF)?;
         self.write_registers(reg::LORA_SYNC_WORD, &c.sync_word_reg())?;
         // Errata 15.4: optimise IQ for standard (non-inverted) polarity.
@@ -392,9 +384,7 @@ impl Sx1262 {
         self.write_registers(reg::IQ_POLARITY, &[iq])?;
         self.write_registers(reg::RX_GAIN, &[if c.rx_boosted_gain { 0x96 } else { 0x94 }])?;
         let all = irq::ALL.to_be_bytes();
-        let dio1 = (irq::RX_DONE | irq::TX_DONE | irq::HEADER_ERR | irq::CRC_ERR | irq::TIMEOUT
-            | irq::CAD_DONE)
-            .to_be_bytes();
+        let dio1 = (irq::RX_DONE | irq::TX_DONE | irq::HEADER_ERR | irq::CRC_ERR | irq::TIMEOUT | irq::CAD_DONE).to_be_bytes();
         self.command(cmd::SET_DIO_IRQ_PARAMS, &[all[0], all[1], dio1[0], dio1[1], 0, 0, 0, 0])?;
         self.clear_irq(irq::ALL)?;
         let errs = self.get_device_errors()?;

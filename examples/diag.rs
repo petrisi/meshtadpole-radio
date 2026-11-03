@@ -55,15 +55,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ms = t.elapsed().as_millis();
             std::thread::sleep(Duration::from_millis(50));
             let st = r.get_status()?;
-            println!("t={:.1} reset_agc {ms} ms rssi before={before} after={} mode/cmd={:?} errors=0x{:04x}", t0.elapsed().as_secs_f32(), r.rssi_inst()?, sx1262::status_fields(st), r.get_device_errors()?);
+            println!(
+                "t={:.1} reset_agc {ms} ms rssi before={before} after={} mode/cmd={:?} errors=0x{:04x}",
+                t0.elapsed().as_secs_f32(),
+                r.rssi_inst()?,
+                sx1262::status_fields(st),
+                r.get_device_errors()?
+            );
             let sync = r.read_registers(sx1262::reg::LORA_SYNC_WORD, 2)?;
             let gain = r.read_registers(sx1262::reg::RX_GAIN, 1)?;
-            println!("  sync_reg={:02x}{:02x} (expect {:02x}{:02x}) rx_gain={:02x}", sync[0], sync[1], cfg.sync_word_reg()[0], cfg.sync_word_reg()[1], gain[0]);
+            println!(
+                "  sync_reg={:02x}{:02x} (expect {:02x}{:02x}) rx_gain={:02x}",
+                sync[0],
+                sync[1],
+                cfg.sync_word_reg()[0],
+                cfg.sync_word_reg()[1],
+                gain[0]
+            );
             last_agc = Instant::now();
         }
         if last.elapsed() > Duration::from_secs(10) {
             let st = r.get_status()?;
-            println!("t={:.0} mode/cmd={:?} rssi_inst min={rmin} avg={:.1} max={rmax} pins={:08b}", t0.elapsed().as_secs_f32(), sx1262::status_fields(st), rsum / n as f32, r.inputs()?);
+            println!(
+                "t={:.0} mode/cmd={:?} rssi_inst min={rmin} avg={:.1} max={rmax} pins={:08b}",
+                t0.elapsed().as_secs_f32(),
+                sx1262::status_fields(st),
+                rsum / n as f32,
+                r.inputs()?
+            );
             (rmin, rmax, rsum, n) = (0.0, -200.0, 0.0, 0);
             last = Instant::now();
         }

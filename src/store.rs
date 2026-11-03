@@ -140,12 +140,13 @@ impl Session {
 
     /// Radio lifecycle: connected, disconnected, open_failed, rx_restored.
     pub fn radio_event(&self, event: &str, detail: &str) -> Result<()> {
-        self.c.execute(
-            "INSERT INTO radio_events(session_id,t,event,detail) VALUES(?1,?2,?3,?4)",
-            params![self.id, now(), event, detail],
-        )?;
+        self.c
+            .execute("INSERT INTO radio_events(session_id,t,event,detail) VALUES(?1,?2,?3,?4)", params![self.id, now(), event, detail])?;
         if event == "connected" {
-            self.c.execute("UPDATE sessions SET usb_serial=?1 WHERE id=?2 AND (usb_serial IS NULL OR usb_serial='')", params![detail, self.id])?;
+            self.c.execute(
+                "UPDATE sessions SET usb_serial=?1 WHERE id=?2 AND (usb_serial IS NULL OR usb_serial='')",
+                params![detail, self.id],
+            )?;
         }
         Ok(())
     }
@@ -165,9 +166,6 @@ impl Session {
 
 /// Log an API request and its result.
 pub fn log_request(c: &Connection, req: &Value, result: &Value) -> Result<()> {
-    c.execute(
-        "INSERT INTO requests(t,request_json,result_json) VALUES(?1,?2,?3)",
-        params![now(), req.to_string(), result.to_string()],
-    )?;
+    c.execute("INSERT INTO requests(t,request_json,result_json) VALUES(?1,?2,?3)", params![now(), req.to_string(), result.to_string()])?;
     Ok(())
 }
