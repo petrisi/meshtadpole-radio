@@ -1,4 +1,4 @@
-//! Run link::run with a printing handler (MeshCore modem settings). Usage: linktest <freq_hz> <stats_s> [run_s]
+//! Run link::run with a printing handler (MeshCore modem settings). Usage: linktest <freq_hz> <stats_s> [run_s] [agc_reset_interval_s]
 use meshtadpole_radio::link::{self, BoxError, Event, Handler, Stats, TxJob};
 use meshtadpole_radio::sx1262::{LoraConfig, RxFrame};
 use std::sync::atomic::AtomicBool;
@@ -51,6 +51,7 @@ fn main() {
         duty_cycle_limit: 0.1,
         duty_cycle_enforce: true,
         stats_interval: Duration::from_secs(a[2].parse().unwrap()),
+        agc_reset_interval: a.get(4).map(|x| Duration::from_secs(x.parse().unwrap())),
     };
     let (_tx, rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));

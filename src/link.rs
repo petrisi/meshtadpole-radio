@@ -42,6 +42,11 @@ pub struct LinkConfig {
     pub duty_cycle_enforce: bool,
     /// Stats/heartbeat/watchdog interval.
     pub stats_interval: Duration,
+    /// Preventive receiver reset (`Sx1262::reset_agc`) interval, MeshCore-style. Skipped while frames are
+    /// being received (receiver proven alive) or a reception/TX is in progress. Tradeoff: each reset is a
+    /// few tens of ms deaf; without it a lockup the stuck detector misses (e.g. under steady traffic) can
+    /// last until the next detection. None = only reactive recovery.
+    pub agc_reset_interval: Option<Duration>,
 }
 
 /// Transmit request. `meta` is opaque to the link and handed back in [`Handler::transmitted`].
@@ -84,7 +89,9 @@ pub enum Event {
     Disconnected { error: String },
     /// Logged only when the error text changes.
     OpenFailed { error: String },
-    /// Watchdog found the chip not in RX and reconfigured it.
+    /// Receiver recovery. `detail` starts with the trigger: `agc_stuck:` (stuck heuristic, light reset),
+    /// `agc_periodic:` (interval reset), `agc_startup:` (after open), `mode_watchdog:` (chip not in RX,
+    /// full reconfigure). `fallback=configure` in detail: light reset failed, full reconfigure done.
     RxRestored { detail: String },
 }
 
@@ -165,9 +172,9 @@ fn channel_busy(radio: &mut Sx1262, since: &mut Option<Instant>) -> crate::Resul
     Ok(true)
 }
 
-/// Detects a receiver stuck at a constant high RSSI with no reception (observed on the MeshTadpole
-/// SX1262: idle RSSI locks at about -76 dBm and nothing is received until the chip is reconfigured;
-/// MeshCore firmware has a periodic AGC reset for the same symptom).
+/// Detects the SX1262 out-of-band lockup (RadioLib errata): after a strong (adjacent-channel) signal the
+/// receiver stays deaf with idle RSSI flat and inflated by up to ~35 dB while the chip remains in RX mode.
+/// Observed on the MeshTadpole at 869.618 MHz with Meshtastic traffic 187 kHz away: flat ~-76 dBm.
 struct Stuck {
     floor: Option<f32>,
     floor_t: Instant,
@@ -179,10 +186,13 @@ struct Stuck {
 
 impl Stuck {
     /// Idle samples (~1/s) in the window.
-    const WIN: usize = 15;
+    const WIN: usize = 8;
     /// Window spread (dB) at most, and minimum elevation above the floor (dB).
     const SPREAD: f32 = 3.0;
     const ELEVATION: f32 = 12.0;
+    /// A floor never below this is itself suspect (receiver stuck since the session started): a flat
+    /// window above it also triggers. Typical MeshTadpole idle floor at 62.5 kHz: -95..-100 dBm.
+    const SUSPECT: f32 = -88.0;
 
     fn new() -> Stuck {
         Stuck { floor: None, floor_t: Instant::now(), win: VecDeque::new(), backoff: Duration::ZERO, next_check: Instant::now(), last_reset: None }
@@ -213,7 +223,8 @@ impl Stuck {
         let mn = self.win.iter().copied().reduce(f32::min)?;
         let mx = self.win.iter().copied().reduce(f32::max)?;
         let floor = self.floor?;
-        (mx - mn <= Self::SPREAD && mn > floor + Self::ELEVATION).then_some((mn, floor))
+        let flat = mx - mn <= Self::SPREAD;
+        (flat && (mn > floor + Self::ELEVATION || (floor > Self::SUSPECT && mn > Self::SUSPECT))).then_some((mn, floor))
     }
 
     /// After a reset: repeated triggers within 2 min back off (constant real interferer), up to 10 min.
@@ -225,6 +236,25 @@ impl Stuck {
         self.last_reset = Some(Instant::now());
         self.next_check = Instant::now() + self.backoff;
         self.win.clear();
+    }
+}
+
+/// Light receiver reset; on failure or if the chip is not back in RX, full reconfigure.
+/// Returns event detail suffix (duration, fallback).
+fn recover(radio: &mut Sx1262, lora: &LoraConfig) -> crate::Result<String> {
+    let t0 = Instant::now();
+    let light = radio.reset_agc(lora).and_then(|_| radio.get_status()).map(|s| sx1262::status_fields(s).0);
+    match light {
+        Ok(5) => Ok(format!("reset_agc {} ms", t0.elapsed().as_millis())),
+        other => {
+            let why = match other {
+                Ok(mode) => format!("chip mode {mode} after reset_agc"),
+                Err(e) => format!("reset_agc failed: {e}"),
+            };
+            radio.configure(lora)?;
+            radio.start_rx()?;
+            Ok(format!("fallback=configure ({why}) {} ms", t0.elapsed().as_millis()))
+        }
     }
 }
 
@@ -363,7 +393,12 @@ fn connected<H: Handler>(
     let mut busy_since: Option<Instant> = None;
     let mut last_noise = Instant::now();
     let mut stuck = Stuck::new();
+    let mut last_frame: Option<Instant> = None;
+    let mut next_periodic = cfg.agc_reset_interval.map(|i| Instant::now() + i);
+    // Start from a freshly calibrated front end so the floor estimate is not learned from a stuck receiver.
     let r: Result<(), Exit> = (|| {
+        let how = recover(radio, lora)?;
+        h.event(&Event::RxRestored { detail: format!("agc_startup: {how}") }).map_err(Exit::Handler)?;
         while !stop.load(Ordering::SeqCst) {
             while let Ok(job) = jobs.try_recv() {
                 let at = Instant::now() + job.delay;
@@ -374,6 +409,9 @@ fn connected<H: Handler>(
                 Some(RxEvent::Frame(f)) => {
                     did_rx = true;
                     stuck.activity();
+                    if !f.crc_error {
+                        last_frame = Some(Instant::now());
+                    }
                     let t = now();
                     let air = lora.time_on_air_us(f.data.len()) / 1000.0;
                     acc.frames += 1;
@@ -409,11 +447,19 @@ fn connected<H: Handler>(
                     acc.nsum += r;
                     last_noise = Instant::now();
                     if let Some((at, floor)) = stuck.sample(r) {
-                        radio.configure(lora)?;
-                        radio.start_rx()?;
+                        let how = recover(radio, lora)?;
                         stuck.reset_done();
-                        let detail = format!("rssi constant at {at:.0} dBm (floor {floor:.0} dBm), no reception; receiver reconfigured");
+                        let detail = format!("agc_stuck: rssi flat at {at:.0} dBm (floor {floor:.0} dBm), no reception; {how}");
                         h.event(&Event::RxRestored { detail }).map_err(Exit::Handler)?;
+                    }
+                } else if pending.is_empty() && next_periodic.is_some_and(|t| Instant::now() >= t) {
+                    let iv = cfg.agc_reset_interval.unwrap();
+                    next_periodic = Some(Instant::now() + iv);
+                    let alive = last_frame.is_some_and(|t| t.elapsed() < iv);
+                    if !alive && !channel_busy(radio, &mut busy_since)? {
+                        let how = recover(radio, lora)?;
+                        stuck.activity();
+                        h.event(&Event::RxRestored { detail: format!("agc_periodic: {how}") }).map_err(Exit::Handler)?;
                     }
                 }
                 std::thread::sleep(Duration::from_millis(3));
@@ -422,12 +468,12 @@ fn connected<H: Handler>(
                 let s = acc.take();
                 h.stats(&s).map_err(Exit::Handler)?;
                 h.heartbeat().map_err(Exit::Handler)?;
-                // Watchdog: chip must be in RX (mode 5) when idle; otherwise reconfigure.
+                // Mode watchdog: chip must be in RX (mode 5) when idle; otherwise full reconfigure.
                 let (mode, _) = sx1262::status_fields(radio.get_status()?);
                 if mode != 5 && pending.is_empty() {
                     radio.configure(lora)?;
                     radio.start_rx()?;
-                    h.event(&Event::RxRestored { detail: format!("chip mode was {mode}") }).map_err(Exit::Handler)?;
+                    h.event(&Event::RxRestored { detail: format!("mode_watchdog: chip mode was {mode}; configure") }).map_err(Exit::Handler)?;
                 }
                 *last_stat = Instant::now();
             }

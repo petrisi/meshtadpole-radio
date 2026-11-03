@@ -24,6 +24,7 @@ pub mod cmd {
     pub const WRITE_REGISTER: u8 = 0x0D;
     pub const READ_BUFFER: u8 = 0x1E;
     pub const WRITE_BUFFER: u8 = 0x0E;
+    pub const SET_SLEEP: u8 = 0x84;
     pub const SET_STANDBY: u8 = 0x80;
     pub const SET_RX: u8 = 0x82;
     pub const SET_TX: u8 = 0x83;
@@ -298,6 +299,46 @@ impl Sx1262 {
     pub fn configure(&mut self, c: &LoraConfig) -> Result<()> {
         self.reset()?;
         self.command(cmd::SET_STANDBY, &[0x00])?;
+        self.set_tcxo(c)?;
+        self.calibrate_all()?;
+        self.apply_settings(c)
+    }
+
+    /// Calibrate(0x7F): RC64k, RC13M, PLL, ADC, image (image defaults to 902-928 MHz; `apply_settings`
+    /// re-runs image calibration for the operating frequency). Calibration errors are cleared.
+    fn calibrate_all(&mut self) -> Result<()> {
+        self.command(cmd::CALIBRATE, &[0x7F])?;
+        sleep(Duration::from_millis(5));
+        self.wait_busy(Duration::from_millis(100))?;
+        self.command(cmd::CLEAR_DEVICE_ERRORS, &[0, 0])
+    }
+
+    /// Light receiver recovery (warm AGC/calibration reset), as MeshCore `sx126xResetAGC` / Meshtastic
+    /// SX126x `resetAGC`: RX off, warm sleep (configuration retained), wake to STDBY_RC, Calibrate(0x7F),
+    /// re-apply all settings (incl. image calibration for the operating frequency, DIO2 RF switch, RX gain,
+    /// sync word, IQ fix, OCP), back to continuous RX. No NRESET. Fails if the chip reports device errors
+    /// afterwards; callers fall back to `configure`.
+    ///
+    /// Use for the SX1262 out-of-band lockup: after a strong (adjacent-channel) signal the receiver can stay
+    /// deaf with idle RSSI reading up to ~35 dB high while the chip remains in RX mode.
+    pub fn reset_agc(&mut self, c: &LoraConfig) -> Result<()> {
+        self.command(cmd::SET_STANDBY, &[0x00])?;
+        self.set_rxen(false)?;
+        // Warm start, RTC wake-up off.
+        self.command(cmd::SET_SLEEP, &[0x04])?;
+        // >= 500 us before the wake-up edge.
+        sleep(Duration::from_millis(1));
+        self.wake()?;
+        self.command(cmd::SET_STANDBY, &[0x00])?;
+        // Retained in warm sleep per datasheet; re-sent so calibration never runs without the TCXO.
+        self.set_tcxo(c)?;
+        self.calibrate_all()?;
+        self.apply_settings(c)?;
+        self.start_rx()
+    }
+
+    /// DIO3 TCXO supply (must precede calibration).
+    fn set_tcxo(&mut self, c: &LoraConfig) -> Result<()> {
         if c.tcxo_mv > 0 {
             let code = match c.tcxo_mv {
                 0..=1600 => 0x00,
@@ -316,10 +357,19 @@ impl Sx1262 {
                 &[code, (d >> 16) as u8, (d >> 8) as u8, d as u8],
             )?;
         }
-        self.command(cmd::CALIBRATE, &[0x7F])?;
-        sleep(Duration::from_millis(5));
-        self.wait_busy(Duration::from_millis(100))?;
-        self.command(cmd::CLEAR_DEVICE_ERRORS, &[0, 0])?;
+        Ok(())
+    }
+
+    /// Wake from sleep: NSS falling edge, then wait for BUSY low.
+    fn wake(&mut self) -> Result<()> {
+        self.bus.digital_write(self.pins.nss, false)?;
+        sleep(Duration::from_millis(1));
+        self.bus.digital_write(self.pins.nss, true)?;
+        self.wait_busy(Duration::from_millis(100))
+    }
+
+    /// All modem/RF settings after calibration (shared by `configure` and `reset_agc`). Leaves standby.
+    fn apply_settings(&mut self, c: &LoraConfig) -> Result<()> {
         self.command(cmd::SET_REGULATOR_MODE, &[0x01])?;
         self.command(cmd::SET_DIO2_AS_RF_SWITCH_CTRL, &[0x01])?;
         self.command(cmd::SET_PACKET_TYPE, &[0x01])?;

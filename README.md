@@ -43,8 +43,8 @@ Interface 0, bulk OUT `0x02`, bulk IN `0x82`.
 cargo run --example probe                                  # enumerate, reset, identify
 cargo run --example rx -- 869431250 62500 8 8 2b 16 [s]    # raw RX, NDJSON (Meshtastic EFL)
 cargo run --example rx -- 869618000 62500 8 8 12 32 [s]    # raw RX (MeshCore EU/UK Narrow)
-cargo run --example diag -- <same args> <s>                # IRQ/RSSI/mode trace, SPI-polled
-cargo run --example linktest -- 869618000 10 120           # link loop, printing handler: <freq> <stats_s> [run_s]
+cargo run --example diag -- <same args> <s> [agc_s]        # IRQ/RSSI/mode trace, SPI-polled; reset_agc every agc_s
+cargo run --example linktest -- 869618000 10 120 [agc_s]   # link loop, printing handler: <freq> <stats_s> [run_s] [agc_reset_interval_s]
 ```
 
 Sync word byte `sw` maps to register `0x0740` as `[(sw&0xF0)|4, ((sw&0x0F)<<4)|4]`.
@@ -55,7 +55,13 @@ Schematic: https://github.com/LongMesh/MeshHardware (MeshTadpoleStick).
 
 - CH341: device enumeration, SPI transfers, GPIO (NSS, RESET, BUSY, DIO1, RF switch).
 - SX1262: init, LoRa modem parameters, TX, continuous RX, IRQ handling, RSSI/SNR/frequency error, CAD.
-- `link`: protocol-independent radio session loop used by the tool daemons. Open with reconnect (backoff 1-30 s, starts without a stick), continuous RX, TX queue with CSMA (busy = preamble/header detected; random 200-800 ms deferral), rolling-hour duty-cycle limit, idle noise sampling ~1/s, periodic stats, RX watchdog (chip not in RX mode), stuck-receiver recovery (idle RSSI constant within 3 dB for 15 samples, >= 12 dB above the floor, no reception: reconfigure; repeated triggers back off 30 s-10 min). Recoveries are `rx_restored` events. Protocol logic is a `link::Handler`.
+- `link`: protocol-independent radio session loop used by the tool daemons. Open with reconnect (backoff 1-30 s, starts without a stick), continuous RX, TX queue with CSMA (busy = preamble/header detected; random 200-800 ms deferral), rolling-hour duty-cycle limit, idle noise sampling ~1/s, periodic stats. Protocol logic is a `link::Handler`. Receiver recovery, all reported as `rx_restored` events with the trigger as detail prefix:
+  - `agc_stuck`: SX1262 out-of-band lockup (RadioLib errata: after a strong adjacent-channel signal the receiver stays deaf, idle RSSI flat and up to ~35 dB high, chip still in RX mode). Detected when 8 idle RSSI samples (~8 s) are within 3 dB and >= 12 dB above the session floor, or above -88 dBm while the floor never went below -88 dBm. Recovery: `Sx1262::reset_agc` (light, ~25 ms). Repeated triggers within 2 min back off 30 s-10 min (steady real interferer).
+  - `agc_startup`: one light reset after every open, so the floor is not learned from a stuck receiver.
+  - `agc_periodic`: optional preventive reset every `LinkConfig::agc_reset_interval`; skipped while frames are received or the channel is busy.
+  - `mode_watchdog`: chip not in RX mode when idle (checked every stats interval): full `configure`.
+  - `fallback=configure` in detail: light reset failed or chip not in RX afterwards; full reconfigure done.
+- `Sx1262::reset_agc`: warm AGC/calibration reset as MeshCore `sx126xResetAGC`: RX off, warm sleep, wake to STDBY_RC, Calibrate(0x7F), image calibration for the operating frequency, re-apply all modem/RF settings (DIO2 RF switch, RX gain, sync word, IQ fix, OCP, ...), continuous RX. No NRESET. `configure` (NRESET + full init) is for open and hard failures.
 - `api`: daemon API transport (TCP, NDJSON lines, subscriber broadcast).
 - `store` (feature `store`): SQLite helpers and common tables `meta`, `sessions`, `radio_stats`, `radio_events`, `requests`; `query_json`.
 
