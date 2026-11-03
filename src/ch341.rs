@@ -8,7 +8,7 @@
 //! - Inputs: `[0xA0]` -> reply, byte 0 = D0..D7 levels.
 
 use crate::{Error, Result};
-use rusb::{DeviceHandle, GlobalContext};
+use rusb::{Context, DeviceHandle, UsbContext};
 use std::time::Duration;
 
 pub const VID: u16 = 0x1A86;
@@ -46,7 +46,7 @@ pub struct DeviceInfo {
     pub open_error: Option<String>,
 }
 
-fn read_string_raw(h: &DeviceHandle<GlobalContext>, index: u8) -> Vec<u8> {
+fn read_string_raw<T: UsbContext>(h: &DeviceHandle<T>, index: u8) -> Vec<u8> {
     if index == 0 {
         return Vec::new();
     }
@@ -83,10 +83,14 @@ pub fn device_id(product_raw: &[u8]) -> Option<[u8; 16]> {
     (id.iter().any(|&b| b != 0) && id.iter().any(|&b| b != 0xFF)).then_some(id)
 }
 
-/// Enumerate attached devices with the given VID/PID.
+/// Enumerate attached devices with the given VID/PID (fresh libusb context).
 pub fn list(vid: u16, pid: u16) -> Result<Vec<DeviceInfo>> {
+    list_in(&Context::new()?, vid, pid)
+}
+
+fn list_in<T: UsbContext>(ctx: &T, vid: u16, pid: u16) -> Result<Vec<DeviceInfo>> {
     let mut out = Vec::new();
-    for dev in rusb::devices()?.iter() {
+    for dev in ctx.devices()?.iter() {
         let Ok(desc) = dev.device_descriptor() else { continue };
         if desc.vendor_id() != vid || desc.product_id() != pid {
             continue;
@@ -122,7 +126,7 @@ pub fn list(vid: u16, pid: u16) -> Result<Vec<DeviceInfo>> {
 
 /// Open CH341 handle with GPIO shadow state.
 pub struct Ch341 {
-    h: DeviceHandle<GlobalContext>,
+    h: DeviceHandle<Context>,
     dir: u8,
     state: u8,
     pub info: DeviceInfo,
@@ -130,15 +134,32 @@ pub struct Ch341 {
 
 impl Ch341 {
     /// Open the first openable device, or the one with the given USB serial.
+    ///
+    /// Each call uses a new libusb context: a long-running process must not depend on enumeration
+    /// state from before a device was removed (observed on Windows after VMware USB passthrough:
+    /// the global context kept failing while a fresh process could open the device).
     pub fn open(serial: Option<&str>) -> Result<Self> {
-        let info = list(VID, PID)?
-            .into_iter()
-            .find(|i| match serial {
-                Some(s) => i.serial.as_deref() == Some(s),
-                None => i.open_error.is_none(),
-            })
-            .ok_or(Error::NotFound)?;
-        let dev = rusb::devices()?
+        let ctx = Context::new()?;
+        let infos = list_in(&ctx, VID, PID)?;
+        let info = match infos.iter().find(|i| match serial {
+            Some(s) => i.serial.as_deref() == Some(s),
+            None => i.open_error.is_none(),
+        }) {
+            Some(i) => i.clone(),
+            None => {
+                // Present but not openable: report why instead of "not found".
+                let errs: Vec<String> = infos
+                    .iter()
+                    .filter_map(|i| i.open_error.as_ref().map(|e| format!("bus {} addr {}: {e}", i.bus, i.address)))
+                    .collect();
+                return Err(if errs.is_empty() {
+                    Error::NotFound
+                } else {
+                    Error::Radio(format!("device present but open failed: {}", errs.join("; ")))
+                });
+            }
+        };
+        let dev = ctx.devices()?
             .iter()
             .find(|d| d.bus_number() == info.bus && d.address() == info.address)
             .ok_or(Error::NotFound)?;
