@@ -1,6 +1,6 @@
 # meshtadpole-radio
 
-Rust library: host-side driver for the MeshTadpole SX1262 USB stick. Shared by `meshtadpole-meshtastic-cli` and `meshtadpole-meshcore-cli`.
+Rust library: host-side driver for the MeshTadpole SX1262 USB stick. Shared by [meshtadpole-meshtastic-cli](https://github.com/petrisi/meshtadpole-meshtastic-cli) and [meshtadpole-meshcore-cli](https://github.com/petrisi/meshtadpole-meshcore-cli).
 
 ## Hardware
 
