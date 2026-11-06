@@ -52,6 +52,7 @@ fn main() {
         duty_cycle_enforce: true,
         stats_interval: Duration::from_secs(a[2].parse().unwrap()),
         agc_reset_interval: a.get(4).map(|x| Duration::from_secs(x.parse().unwrap())),
+        stuck_observe_max: None,
         liveness: Default::default(),
     };
     let (_tx, rx) = mpsc::channel();

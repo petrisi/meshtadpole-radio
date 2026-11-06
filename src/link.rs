@@ -47,6 +47,10 @@ pub struct LinkConfig {
     /// few tens of ms deaf; without it a lockup the stuck detector misses (e.g. under steady traffic) can
     /// last until the next detection. None = only reactive recovery.
     pub agc_reset_interval: Option<Duration>,
+    /// Diagnostic: on a stuck detection, observe instead of resetting (`Event::RxObserved` at start and
+    /// end). The episode ends when idle RSSI is back within 12 dB of the floor; after this long without
+    /// that, the receiver is reset. None = reset at detection (normal operation).
+    pub stuck_observe_max: Option<Duration>,
     /// Updated on every loop iteration; watch it with `spawn_watchdog`.
     pub liveness: Arc<Liveness>,
 }
@@ -137,6 +141,11 @@ pub enum Event {
     RxRestored {
         detail: String,
     },
+    /// Stuck episode in observe mode (`LinkConfig::stuck_observe_max`). `detail` starts with
+    /// `agc_observe_start:` or `agc_observe_end:`.
+    RxObserved {
+        detail: String,
+    },
 }
 
 impl Event {
@@ -146,13 +155,14 @@ impl Event {
             Event::Disconnected { .. } => "disconnected",
             Event::OpenFailed { .. } => "open_failed",
             Event::RxRestored { .. } => "rx_restored",
+            Event::RxObserved { .. } => "rx_observed",
         }
     }
     pub fn detail(&self) -> &str {
         match self {
             Event::Connected { usb_serial } => usb_serial,
             Event::Disconnected { error } | Event::OpenFailed { error } => error,
-            Event::RxRestored { detail } => detail,
+            Event::RxRestored { detail } | Event::RxObserved { detail } => detail,
         }
     }
 }
@@ -295,6 +305,52 @@ impl Stuck {
         self.last_reset = Some(Instant::now());
         self.next_check = Instant::now() + self.backoff;
         self.win.clear();
+    }
+}
+
+/// A stuck episode in observe mode.
+struct Episode {
+    start: Instant,
+    floor: f32,
+    min: f32,
+    max: f32,
+    /// CRC-good frames and the highest RSSI among them.
+    ok: u32,
+    ok_rssi: Option<f32>,
+    crc: u32,
+    hdr: u32,
+    tx: u32,
+    last_tx: Option<Instant>,
+}
+
+impl Episode {
+    fn new(at: f32, floor: f32) -> Episode {
+        Episode { start: Instant::now(), floor, min: at, max: at, ok: 0, ok_rssi: None, crc: 0, hdr: 0, tx: 0, last_tx: None }
+    }
+
+    fn frame(&mut self, f: &RxFrame) {
+        if f.crc_error {
+            self.crc += 1;
+        } else {
+            self.ok += 1;
+            self.ok_rssi = Some(self.ok_rssi.map_or(f.rssi_dbm, |r| r.max(f.rssi_dbm)));
+        }
+    }
+
+    fn summary(&self, ended: &str) -> String {
+        let ok_rssi = self.ok_rssi.map(|r| format!(" (max rssi {r:.0} dBm)")).unwrap_or_default();
+        let tx = self.last_tx.map(|t| format!(", last {:.0} s before end", t.elapsed().as_secs_f32())).unwrap_or_default();
+        format!(
+            "agc_observe_end: {:.0} s; idle rssi {:.0}..{:.0} dBm (floor {:.0} dBm); frames ok {}{ok_rssi}, crc_err {}, hdr_err {}; tx {}{tx}; ended: {ended}",
+            self.start.elapsed().as_secs_f32(),
+            self.min,
+            self.max,
+            self.floor,
+            self.ok,
+            self.crc,
+            self.hdr,
+            self.tx,
+        )
     }
 }
 
@@ -459,6 +515,7 @@ fn connected<H: Handler>(
     let mut busy_since: Option<Instant> = None;
     let mut last_noise = Instant::now();
     let mut stuck = Stuck::new();
+    let mut episode: Option<Episode> = None;
     let mut last_frame: Option<Instant> = None;
     let mut next_periodic = cfg.agc_reset_interval.map(|i| Instant::now() + i);
     let r: Result<(), Exit> = (|| {
@@ -478,6 +535,9 @@ fn connected<H: Handler>(
                         stuck.activity();
                         last_frame = Some(Instant::now());
                     }
+                    if let Some(e) = episode.as_mut() {
+                        e.frame(&f);
+                    }
                     let t = now();
                     let air = lora.time_on_air_us(f.data.len()) / 1000.0;
                     acc.frames += 1;
@@ -491,6 +551,9 @@ fn connected<H: Handler>(
                 Some(RxEvent::HeaderError { rssi_inst_dbm, .. }) => {
                     did_rx = true;
                     acc.hdr += 1;
+                    if let Some(e) = episode.as_mut() {
+                        e.hdr += 1;
+                    }
                     h.header_error(now(), rssi_inst_dbm).map_err(Exit::Handler)?;
                 }
                 None => {}
@@ -503,6 +566,10 @@ fn connected<H: Handler>(
                     } else {
                         let (job, _) = pending.pop_front().unwrap();
                         transmit(cfg, radio, h, airtime, job)?;
+                        if let Some(e) = episode.as_mut() {
+                            e.tx += 1;
+                            e.last_tx = Some(Instant::now());
+                        }
                     }
                 } else if pending.is_empty() && last_noise.elapsed() >= Duration::from_secs(1) {
                     let r = radio.rssi_inst()?;
@@ -513,11 +580,32 @@ fn connected<H: Handler>(
                         acc.nmax = acc.nmax.max(r);
                         acc.nsum += r;
                     }
-                    if let Some((at, floor)) = stuck.sample(r) {
-                        let how = recover(radio, lora)?;
-                        stuck.reset_done();
-                        let detail = format!("agc_stuck: rssi flat at {at:.0} dBm (floor {floor:.0} dBm), no reception; {how}");
-                        h.event(&Event::RxRestored { detail }).map_err(Exit::Handler)?;
+                    if let Some(e) = episode.as_mut() {
+                        if r > Stuck::INVALID {
+                            e.min = e.min.min(r);
+                            e.max = e.max.max(r);
+                        }
+                        let back = r > Stuck::INVALID && r <= e.floor + Stuck::ELEVATION;
+                        let timeout = cfg.stuck_observe_max.is_some_and(|m| e.start.elapsed() >= m);
+                        if back || timeout {
+                            let ended =
+                                if back { format!("rssi back to {r:.0} dBm") } else { format!("timeout, {}", recover(radio, lora)?) };
+                            let detail = e.summary(&ended);
+                            episode = None;
+                            stuck.activity();
+                            h.event(&Event::RxObserved { detail }).map_err(Exit::Handler)?;
+                        }
+                    } else if let Some((at, floor)) = stuck.sample(r) {
+                        if cfg.stuck_observe_max.is_some() {
+                            episode = Some(Episode::new(at, floor));
+                            let detail = format!("agc_observe_start: rssi flat at {at:.0} dBm (floor {floor:.0} dBm), no reception");
+                            h.event(&Event::RxObserved { detail }).map_err(Exit::Handler)?;
+                        } else {
+                            let how = recover(radio, lora)?;
+                            stuck.reset_done();
+                            let detail = format!("agc_stuck: rssi flat at {at:.0} dBm (floor {floor:.0} dBm), no reception; {how}");
+                            h.event(&Event::RxRestored { detail }).map_err(Exit::Handler)?;
+                        }
                     }
                 } else if pending.is_empty() && next_periodic.is_some_and(|t| Instant::now() >= t) {
                     let iv = cfg.agc_reset_interval.unwrap();
